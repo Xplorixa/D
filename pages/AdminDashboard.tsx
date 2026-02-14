@@ -34,72 +34,85 @@ const AdminDashboard: React.FC = () => {
   const [chartData, setChartData] = useState<any[]>([]);
 
   useEffect(() => {
-    // Realtime DB Listener
+    // Realtime DB Listener for basic stats
     const countRef = ref(rtdb, 'stats/userCount');
     const unsubscribe = onValue(countRef, (snapshot) => {
       setRealtimeCount(snapshot.val() || 0);
     });
 
-    // Initial Fetch
-    fetchUsers();
-    fetchKeys();
-    fetchEndpoints();
+    // Initial Fetch of all data
+    fetchData();
 
     return () => unsubscribe();
   }, []);
 
+  const fetchData = async () => {
+    setLoading(true);
+    await Promise.all([fetchUsers(), fetchKeys(), fetchEndpoints()]);
+    setLoading(false);
+  };
+
   const processUserChartData = (userList: UserProfile[]) => {
-    const last7Days = [...Array(7)].map((_, i) => {
-      const d = new Date();
-      d.setDate(d.getDate() - i);
-      return d.toISOString().split('T')[0];
-    }).reverse();
-    
-    const trendData = last7Days.map(date => ({
-      name: date.slice(5), // MM-DD
-      registrations: userList.filter(u => u.createdAt && u.createdAt.startsWith(date)).length
-    }));
-    setChartData(trendData);
+    try {
+      const last7Days = [...Array(7)].map((_, i) => {
+        const d = new Date();
+        d.setDate(d.getDate() - i);
+        return d.toISOString().split('T')[0];
+      }).reverse();
+      
+      const trendData = last7Days.map(date => ({
+        name: date.slice(5), // MM-DD
+        registrations: userList.filter(u => u.createdAt && u.createdAt.startsWith(date)).length
+      }));
+      setChartData(trendData);
+    } catch (e) {
+      console.error("Error processing chart data", e);
+    }
   };
 
   const fetchUsers = async () => {
-    setLoading(true);
     setFetchError(null);
     try {
+      let userList: UserProfile[] = [];
       try {
-        // Attempt with orderBy (requires Firestore Index)
+        // First attempt: Sorted by createdAt (requires index)
         const q = query(collection(db, "users"), orderBy("createdAt", "desc"));
         const snapshot = await getDocs(q);
-        const userList = snapshot.docs.map(doc => doc.data() as UserProfile);
-        setUsers(userList);
-        processUserChartData(userList);
+        userList = snapshot.docs.map(doc => ({ uid: doc.id, ...doc.data() } as UserProfile));
       } catch (indexError: any) {
-        // Fallback to client-side sorting if index is missing
-        if (indexError.code === 'failed-precondition' || indexError.message.includes('index')) {
-          console.warn("Firestore index missing, falling back to client-side sorting.");
+        // Fallback: Fetch all and sort client-side if index is missing
+        if (indexError.code === 'failed-precondition' || indexError.message?.toLowerCase().includes('index')) {
+          console.warn("Firestore index missing for users sort. Falling back to client-side sort.");
           const q = query(collection(db, "users"));
           const snapshot = await getDocs(q);
-          const userList = snapshot.docs.map(doc => doc.data() as UserProfile);
-          userList.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
-          setUsers(userList);
-          processUserChartData(userList);
+          userList = snapshot.docs.map(doc => ({ uid: doc.id, ...doc.data() } as UserProfile));
+          // Client-side sort
+          userList.sort((a, b) => {
+            const dateA = a.createdAt || '';
+            const dateB = b.createdAt || '';
+            return dateB.localeCompare(dateA);
+          });
         } else {
+          // Genuine error (e.g., permission denied)
           throw indexError;
         }
       }
+      setUsers(userList);
+      processUserChartData(userList);
     } catch (err: any) {
       console.error("Error fetching users", err);
       setFetchError(err.message || "Failed to fetch users");
-    } finally {
-      setLoading(false);
     }
   };
 
   const fetchKeys = async () => {
     try {
-      const q = query(collection(db, "api_keys"), orderBy("createdAt", "desc"));
+      const q = query(collection(db, "api_keys"));
       const snapshot = await getDocs(q);
-      setApiKeys(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as ApiKey)));
+      const keys = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as ApiKey));
+      // Sort client side to avoid index issues
+      keys.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      setApiKeys(keys);
     } catch (e) {
       console.error("Error fetching keys", e);
     }
@@ -107,48 +120,70 @@ const AdminDashboard: React.FC = () => {
 
   const fetchEndpoints = async () => {
     try {
-      const q = query(collection(db, "custom_endpoints"), orderBy("createdAt", "desc"));
+      const q = query(collection(db, "custom_endpoints"));
       const snapshot = await getDocs(q);
-      setEndpoints(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as CustomEndpoint)));
+      const eps = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as CustomEndpoint));
+      // Sort client side
+      eps.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      setEndpoints(eps);
     } catch (error) {
       console.error("Error fetching endpoints:", error);
     }
   };
 
   const toggleUserStatus = async (uid: string, currentStatus: UserStatus) => {
-    const newStatus = currentStatus === UserStatus.ACTIVE ? UserStatus.BANNED : UserStatus.ACTIVE;
-    await updateDoc(doc(db, "users", uid), { status: newStatus });
-    fetchUsers();
+    try {
+      const newStatus = currentStatus === UserStatus.ACTIVE ? UserStatus.BANNED : UserStatus.ACTIVE;
+      await updateDoc(doc(db, "users", uid), { status: newStatus });
+      // Update local state immediately for better UX
+      setUsers(users.map(u => u.uid === uid ? { ...u, status: newStatus } : u));
+    } catch (e) {
+      console.error("Error updating user", e);
+      alert("Failed to update status");
+    }
   };
 
   const deleteUser = async (uid: string) => {
     if (window.confirm("Are you sure? This cannot be undone.")) {
-      await deleteDoc(doc(db, "users", uid));
-      fetchUsers();
+      try {
+        await deleteDoc(doc(db, "users", uid));
+        setUsers(users.filter(u => u.uid !== uid));
+      } catch (e) {
+        console.error("Error deleting user", e);
+        alert("Failed to delete user");
+      }
     }
   };
 
   const deleteEndpoint = async (id: string) => {
     if (window.confirm("Delete this API endpoint?")) {
-      await deleteDoc(doc(db, "custom_endpoints", id));
-      fetchEndpoints();
+      try {
+        await deleteDoc(doc(db, "custom_endpoints", id));
+        setEndpoints(endpoints.filter(e => e.id !== id));
+      } catch (e) {
+        console.error("Error deleting endpoint", e);
+      }
     }
   };
 
   const generateApiKey = async (scope: 'READ_ONLY' | 'FULL_ACCESS') => {
-    const newKey = 'sk_' + Math.random().toString(36).substr(2, 9) + '_' + Date.now().toString(36);
-    const keyData = {
-      key: newKey,
-      createdBy: userProfile?.email,
-      createdAt: new Date().toISOString(),
-      expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(), // 30 days
-      usageLimit: 10000,
-      currentUsage: 0,
-      scope,
-      status: 'active'
-    };
-    await addDoc(collection(db, "api_keys"), keyData);
-    fetchKeys();
+    try {
+      const newKey = 'sk_' + Math.random().toString(36).substr(2, 9) + '_' + Date.now().toString(36);
+      const keyData = {
+        key: newKey,
+        createdBy: userProfile?.email || 'admin',
+        createdAt: new Date().toISOString(),
+        expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(), // 30 days
+        usageLimit: 10000,
+        currentUsage: 0,
+        scope,
+        status: 'active'
+      };
+      const docRef = await addDoc(collection(db, "api_keys"), keyData);
+      setApiKeys([{ id: docRef.id, ...keyData } as ApiKey, ...apiKeys]);
+    } catch (e) {
+      console.error("Error generating key", e);
+    }
   };
 
   const handleCreateEndpoint = async (e: React.FormEvent) => {
@@ -156,13 +191,14 @@ const AdminDashboard: React.FC = () => {
     if (!newEndpoint.name || !newEndpoint.targetUrl) return;
 
     try {
-      await addDoc(collection(db, "custom_endpoints"), {
+      const epData = {
         ...newEndpoint,
         createdAt: new Date().toISOString(),
         requiresAuth: true
-      });
+      };
+      const docRef = await addDoc(collection(db, "custom_endpoints"), epData);
+      setEndpoints([{ id: docRef.id, ...epData } as CustomEndpoint, ...endpoints]);
       setNewEndpoint({ name: '', targetUrl: '', description: '', method: 'GET', category: 'General' });
-      fetchEndpoints();
       alert("API Endpoint registered successfully");
     } catch (error) {
       console.error("Error creating endpoint:", error);
@@ -186,8 +222,8 @@ const AdminDashboard: React.FC = () => {
   };
 
   const filteredUsers = users.filter(u => 
-    u.fullName.toLowerCase().includes(searchTerm.toLowerCase()) || 
-    u.email.toLowerCase().includes(searchTerm.toLowerCase())
+    (u.fullName || '').toLowerCase().includes(searchTerm.toLowerCase()) || 
+    (u.email || '').toLowerCase().includes(searchTerm.toLowerCase())
   );
 
   return (
@@ -195,11 +231,11 @@ const AdminDashboard: React.FC = () => {
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <h1 className="text-3xl font-bold text-gray-900 dark:text-white">Admin Dashboard</h1>
         <div className="flex space-x-2">
-           <button onClick={exportCSV} className="flex items-center px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700">
+           <button onClick={exportCSV} className="flex items-center px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 transition-colors">
              <Download size={16} className="mr-2" /> Export CSV
            </button>
-           <button onClick={() => { fetchUsers(); fetchKeys(); fetchEndpoints(); }} className="flex items-center px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700">
-             <RefreshCw size={16} className="mr-2" /> Refresh
+           <button onClick={fetchData} className="flex items-center px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700 transition-colors">
+             <RefreshCw size={16} className={`mr-2 ${loading ? 'animate-spin' : ''}`} /> Refresh
            </button>
         </div>
       </div>
@@ -259,7 +295,7 @@ const AdminDashboard: React.FC = () => {
 
       {/* Tabs */}
       <div className="border-b border-gray-200 dark:border-gray-700">
-        <nav className="-mb-px flex space-x-8">
+        <nav className="-mb-px flex space-x-8 overflow-x-auto">
           <button 
             onClick={() => setActiveTab('overview')}
             className={`${activeTab === 'overview' ? 'border-primary text-primary' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'} whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm`}
@@ -288,7 +324,7 @@ const AdminDashboard: React.FC = () => {
       </div>
 
       {/* Tab Content */}
-      <div className="min-h-[400px]">
+      <div className="min-h-[400px] mt-4">
         {activeTab === 'overview' && (
            <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-sm">
              <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-4">Registration Trends (Last 7 Days)</h3>
@@ -337,14 +373,14 @@ const AdminDashboard: React.FC = () => {
                 </thead>
                 <tbody className="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
                   {filteredUsers.length > 0 ? filteredUsers.map((user) => (
-                    <tr key={user.uid}>
+                    <tr key={user.uid || Math.random()}>
                       <td className="px-6 py-4 whitespace-nowrap">
                         <div className="flex items-center">
                           <div className="flex-shrink-0 h-10 w-10">
                             <img className="h-10 w-10 rounded-full object-cover" src={user.photoURL || `https://ui-avatars.com/api/?name=${user.fullName}`} alt="" />
                           </div>
                           <div className="ml-4">
-                            <div className="text-sm font-medium text-gray-900 dark:text-white">{user.fullName}</div>
+                            <div className="text-sm font-medium text-gray-900 dark:text-white">{user.fullName || 'Unknown User'}</div>
                             <div className="text-sm text-gray-500 dark:text-gray-400">{user.email}</div>
                           </div>
                         </div>
@@ -354,7 +390,7 @@ const AdminDashboard: React.FC = () => {
                           user.status === UserStatus.ACTIVE ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200' : 
                           'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200'
                         }`}>
-                          {user.status}
+                          {user.status || 'Active'}
                         </span>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
