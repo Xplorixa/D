@@ -28,6 +28,17 @@ export interface ApiKey {
   status: 'active' | 'revoked';
 }
 
+export interface CustomEndpoint {
+  id: string;
+  name: string;
+  description: string;
+  targetUrl: string;
+  method: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH';
+  category: string;
+  requiresAuth: boolean;
+  createdAt: string;
+}
+
 export interface DashboardStats {
   totalUsers: number;
   activeUsers: number;

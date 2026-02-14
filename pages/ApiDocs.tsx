@@ -1,8 +1,28 @@
-import React, { useState } from 'react';
-import { Copy, Terminal, ChevronRight } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Copy, Terminal, ChevronRight, Server, Globe } from 'lucide-react';
+import { collection, getDocs, query, orderBy } from 'firebase/firestore';
+import { db } from '../services/firebase';
+import { CustomEndpoint } from '../types';
 
 const ApiDocs: React.FC = () => {
   const [copied, setCopied] = useState(false);
+  const [customEndpoints, setCustomEndpoints] = useState<CustomEndpoint[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const fetchEndpoints = async () => {
+      try {
+        const q = query(collection(db, "custom_endpoints"), orderBy("createdAt", "desc"));
+        const snapshot = await getDocs(q);
+        setCustomEndpoints(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as CustomEndpoint)));
+      } catch (err) {
+        console.error("Failed to fetch custom endpoints", err);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchEndpoints();
+  }, []);
 
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text);
@@ -29,7 +49,7 @@ const ApiDocs: React.FC = () => {
 
       <section className="space-y-6">
         <h2 className="text-2xl font-bold text-gray-900 dark:text-white flex items-center">
-          <ChevronRight className="text-primary mr-2" /> Endpoints
+          <ChevronRight className="text-primary mr-2" /> Core Endpoints
         </h2>
 
         {/* Endpoint 1 */}
@@ -91,6 +111,56 @@ const ApiDocs: React.FC = () => {
           </div>
         </div>
       </section>
+
+      {/* Dynamic Managed APIs */}
+      {customEndpoints.length > 0 && (
+        <section className="space-y-6">
+          <h2 className="text-2xl font-bold text-gray-900 dark:text-white flex items-center">
+             <Globe className="text-indigo-500 mr-2" /> Managed Service APIs
+          </h2>
+          <p className="text-gray-600 dark:text-gray-400">
+            Below is a directory of additional APIs managed by this platform. 
+            These are deployed services that can be accessed directly via their endpoints.
+          </p>
+
+          {customEndpoints.map(endpoint => (
+             <div key={endpoint.id} className="bg-white dark:bg-gray-800 shadow-sm rounded-lg overflow-hidden border border-gray-200 dark:border-gray-700">
+                <div className="px-6 py-4 border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 flex items-center justify-between">
+                  <div className="flex items-center space-x-3">
+                    <span className={`px-3 py-1 text-xs font-bold text-white rounded ${
+                      endpoint.method === 'GET' ? 'bg-green-500' :
+                      endpoint.method === 'POST' ? 'bg-blue-500' :
+                      endpoint.method === 'DELETE' ? 'bg-red-500' : 'bg-orange-500'
+                    }`}>{endpoint.method}</span>
+                    <span className="text-sm font-semibold text-gray-700 dark:text-gray-300">{endpoint.name}</span>
+                  </div>
+                  <span className="text-xs text-gray-500">Auth Required: {endpoint.requiresAuth ? 'Yes' : 'No'}</span>
+                </div>
+                <div className="p-6 space-y-4">
+                  <p className="text-gray-600 dark:text-gray-300">{endpoint.description}</p>
+                  
+                  <div className="flex items-center gap-2 mb-2">
+                     <span className="text-xs uppercase font-bold text-gray-500">Target URL</span>
+                  </div>
+                  <div className="relative">
+                    <div className="absolute top-2 right-2">
+                      <button 
+                        onClick={() => copyToClipboard(`curl -X ${endpoint.method} "${endpoint.targetUrl}"`)}
+                        className="p-1 text-gray-400 hover:text-white"
+                      >
+                        <Copy size={16} />
+                      </button>
+                    </div>
+                    <pre className="bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-sm">
+{`curl -X ${endpoint.method} "${endpoint.targetUrl}" \\
+  -H "x-api-key: YOUR_API_KEY"`}
+                    </pre>
+                  </div>
+                </div>
+             </div>
+          ))}
+        </section>
+      )}
 
       <div className="mt-12 bg-white dark:bg-gray-800 rounded-lg p-8 text-center shadow-lg">
         <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-4">Need an API Key?</h2>

@@ -2,22 +2,32 @@ import React, { useState, useEffect } from 'react';
 import { collection, query, getDocs, doc, updateDoc, deleteDoc, addDoc, serverTimestamp, orderBy, limit } from 'firebase/firestore';
 import { ref, onValue } from 'firebase/database';
 import { db, rtdb } from '../services/firebase';
-import { UserProfile, UserStatus, ApiKey } from '../types';
+import { UserProfile, UserStatus, ApiKey, CustomEndpoint } from '../types';
 import { useAuth } from '../context/AuthContext';
 import { 
   Users, Key, Activity, Search, Trash2, Ban, CheckCircle, 
-  Download, Plus, RefreshCw, Copy, Eye, EyeOff 
+  Download, Plus, RefreshCw, Copy, Eye, EyeOff, Globe, ExternalLink, Server
 } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 
 const AdminDashboard: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<'overview' | 'users' | 'keys'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'users' | 'keys' | 'apis'>('overview');
   const [users, setUsers] = useState<UserProfile[]>([]);
   const [apiKeys, setApiKeys] = useState<ApiKey[]>([]);
+  const [endpoints, setEndpoints] = useState<CustomEndpoint[]>([]);
   const [realtimeCount, setRealtimeCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const { userProfile } = useAuth();
+  
+  // New Endpoint Form State
+  const [newEndpoint, setNewEndpoint] = useState({
+    name: '',
+    targetUrl: '',
+    description: '',
+    method: 'GET',
+    category: 'General'
+  });
   
   // Charts Data State
   const [chartData, setChartData] = useState<any[]>([]);
@@ -32,6 +42,7 @@ const AdminDashboard: React.FC = () => {
     // Initial Fetch
     fetchUsers();
     fetchKeys();
+    fetchEndpoints();
 
     return () => unsubscribe();
   }, []);
@@ -69,6 +80,16 @@ const AdminDashboard: React.FC = () => {
     setApiKeys(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as ApiKey)));
   };
 
+  const fetchEndpoints = async () => {
+    try {
+      const q = query(collection(db, "custom_endpoints"), orderBy("createdAt", "desc"));
+      const snapshot = await getDocs(q);
+      setEndpoints(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as CustomEndpoint)));
+    } catch (error) {
+      console.error("Error fetching endpoints:", error);
+    }
+  };
+
   const toggleUserStatus = async (uid: string, currentStatus: UserStatus) => {
     const newStatus = currentStatus === UserStatus.ACTIVE ? UserStatus.BANNED : UserStatus.ACTIVE;
     await updateDoc(doc(db, "users", uid), { status: newStatus });
@@ -79,6 +100,13 @@ const AdminDashboard: React.FC = () => {
     if (window.confirm("Are you sure? This cannot be undone.")) {
       await deleteDoc(doc(db, "users", uid));
       fetchUsers();
+    }
+  };
+
+  const deleteEndpoint = async (id: string) => {
+    if (window.confirm("Delete this API endpoint?")) {
+      await deleteDoc(doc(db, "custom_endpoints", id));
+      fetchEndpoints();
     }
   };
 
@@ -96,6 +124,25 @@ const AdminDashboard: React.FC = () => {
     };
     await addDoc(collection(db, "api_keys"), keyData);
     fetchKeys();
+  };
+
+  const handleCreateEndpoint = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newEndpoint.name || !newEndpoint.targetUrl) return;
+
+    try {
+      await addDoc(collection(db, "custom_endpoints"), {
+        ...newEndpoint,
+        createdAt: new Date().toISOString(),
+        requiresAuth: true
+      });
+      setNewEndpoint({ name: '', targetUrl: '', description: '', method: 'GET', category: 'General' });
+      fetchEndpoints();
+      alert("API Endpoint registered successfully");
+    } catch (error) {
+      console.error("Error creating endpoint:", error);
+      alert("Failed to create endpoint");
+    }
   };
 
   const exportCSV = () => {
@@ -126,20 +173,20 @@ const AdminDashboard: React.FC = () => {
            <button onClick={exportCSV} className="flex items-center px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700">
              <Download size={16} className="mr-2" /> Export CSV
            </button>
-           <button onClick={fetchUsers} className="flex items-center px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700">
+           <button onClick={() => { fetchUsers(); fetchKeys(); fetchEndpoints(); }} className="flex items-center px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700">
              <RefreshCw size={16} className="mr-2" /> Refresh
            </button>
         </div>
       </div>
 
       {/* Stats Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
         <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 flex items-center">
           <div className="p-3 bg-blue-100 dark:bg-blue-900 rounded-full mr-4">
             <Users className="text-blue-600 dark:text-blue-300" size={24} />
           </div>
           <div>
-            <p className="text-sm text-gray-500 dark:text-gray-400">Total Registered Users</p>
+            <p className="text-sm text-gray-500 dark:text-gray-400">Total Users</p>
             <p className="text-2xl font-bold text-gray-900 dark:text-white">{realtimeCount}</p>
           </div>
         </div>
@@ -148,8 +195,17 @@ const AdminDashboard: React.FC = () => {
             <Key className="text-purple-600 dark:text-purple-300" size={24} />
           </div>
           <div>
-            <p className="text-sm text-gray-500 dark:text-gray-400">Active API Keys</p>
+            <p className="text-sm text-gray-500 dark:text-gray-400">Active Keys</p>
             <p className="text-2xl font-bold text-gray-900 dark:text-white">{apiKeys.filter(k => k.status === 'active').length}</p>
+          </div>
+        </div>
+        <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 flex items-center">
+          <div className="p-3 bg-indigo-100 dark:bg-indigo-900 rounded-full mr-4">
+            <Globe className="text-indigo-600 dark:text-indigo-300" size={24} />
+          </div>
+          <div>
+            <p className="text-sm text-gray-500 dark:text-gray-400">Managed APIs</p>
+            <p className="text-2xl font-bold text-gray-900 dark:text-white">{endpoints.length}</p>
           </div>
         </div>
         <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 flex items-center">
@@ -183,6 +239,12 @@ const AdminDashboard: React.FC = () => {
             className={`${activeTab === 'keys' ? 'border-primary text-primary' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'} whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm`}
           >
             API Keys
+          </button>
+          <button 
+            onClick={() => setActiveTab('apis')}
+            className={`${activeTab === 'apis' ? 'border-primary text-primary' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'} whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm`}
+          >
+            API Management
           </button>
         </nav>
       </div>
@@ -318,6 +380,103 @@ const AdminDashboard: React.FC = () => {
                 </div>
               ))}
               {apiKeys.length === 0 && <p className="text-center text-gray-500 py-8">No API Keys generated yet.</p>}
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'apis' && (
+          <div className="space-y-6">
+            <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700">
+              <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-4">Register New API Endpoint</h3>
+              <form onSubmit={handleCreateEndpoint} className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">API Name</label>
+                  <input
+                    type="text"
+                    required
+                    className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md dark:bg-gray-700 dark:text-white"
+                    placeholder="e.g. User Profile Service"
+                    value={newEndpoint.name}
+                    onChange={e => setNewEndpoint({...newEndpoint, name: e.target.value})}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Original Deployment URL</label>
+                  <input
+                    type="url"
+                    required
+                    className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md dark:bg-gray-700 dark:text-white"
+                    placeholder="https://my-backend-service.com/api"
+                    value={newEndpoint.targetUrl}
+                    onChange={e => setNewEndpoint({...newEndpoint, targetUrl: e.target.value})}
+                  />
+                </div>
+                <div className="md:col-span-2">
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Description</label>
+                  <input
+                    type="text"
+                    className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md dark:bg-gray-700 dark:text-white"
+                    placeholder="What does this API do?"
+                    value={newEndpoint.description}
+                    onChange={e => setNewEndpoint({...newEndpoint, description: e.target.value})}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Method</label>
+                  <select
+                    className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md dark:bg-gray-700 dark:text-white"
+                    value={newEndpoint.method}
+                    onChange={e => setNewEndpoint({...newEndpoint, method: e.target.value})}
+                  >
+                    <option value="GET">GET</option>
+                    <option value="POST">POST</option>
+                    <option value="PUT">PUT</option>
+                    <option value="DELETE">DELETE</option>
+                  </select>
+                </div>
+                <div className="flex items-end">
+                  <button type="submit" className="w-full flex items-center justify-center px-4 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700">
+                    <Plus size={16} className="mr-2" /> Register Endpoint
+                  </button>
+                </div>
+              </form>
+            </div>
+
+            <div className="grid gap-4">
+              {endpoints.map(ep => (
+                <div key={ep.id} className="bg-white dark:bg-gray-800 p-4 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700">
+                  <div className="flex justify-between items-start">
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <span className={`px-2 py-0.5 rounded text-xs font-bold text-white ${
+                          ep.method === 'GET' ? 'bg-green-500' :
+                          ep.method === 'POST' ? 'bg-blue-500' :
+                          ep.method === 'DELETE' ? 'bg-red-500' : 'bg-orange-500'
+                        }`}>
+                          {ep.method}
+                        </span>
+                        <h4 className="font-semibold text-gray-900 dark:text-white">{ep.name}</h4>
+                      </div>
+                      <p className="text-sm text-gray-500 dark:text-gray-400">{ep.description}</p>
+                      <div className="flex items-center gap-2 text-xs text-indigo-500">
+                        <Server size={12} />
+                        <a href={ep.targetUrl} target="_blank" rel="noopener noreferrer" className="hover:underline truncate max-w-md">
+                          {ep.targetUrl}
+                        </a>
+                        <ExternalLink size={12} />
+                      </div>
+                    </div>
+                    <button 
+                      onClick={() => deleteEndpoint(ep.id)}
+                      className="p-2 text-gray-400 hover:text-red-500 transition-colors"
+                      title="Remove Endpoint"
+                    >
+                      <Trash2 size={18} />
+                    </button>
+                  </div>
+                </div>
+              ))}
+              {endpoints.length === 0 && <p className="text-center text-gray-500 py-8">No managed APIs yet. Add one above.</p>}
             </div>
           </div>
         )}
