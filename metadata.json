@@ -1,0 +1,7 @@
+{
+  "name": "Xplorixa Admin & User Portal",
+  "description": "A comprehensive React application with Firebase integration featuring user registration, admin dashboard, API key management, and documentation.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
