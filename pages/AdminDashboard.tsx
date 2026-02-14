@@ -6,7 +6,7 @@ import { UserProfile, UserStatus, ApiKey, CustomEndpoint } from '../types';
 import { useAuth } from '../context/AuthContext';
 import { 
   Users, Key, Activity, Search, Trash2, Ban, CheckCircle, 
-  Download, Plus, RefreshCw, Copy, Eye, EyeOff, Globe, ExternalLink, Server
+  Download, Plus, RefreshCw, Copy, Eye, EyeOff, Globe, ExternalLink, Server, AlertTriangle
 } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 
@@ -17,6 +17,7 @@ const AdminDashboard: React.FC = () => {
   const [endpoints, setEndpoints] = useState<CustomEndpoint[]>([]);
   const [realtimeCount, setRealtimeCount] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [fetchError, setFetchError] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const { userProfile } = useAuth();
   
@@ -47,37 +48,61 @@ const AdminDashboard: React.FC = () => {
     return () => unsubscribe();
   }, []);
 
-  const fetchUsers = async () => {
-    try {
-      const q = query(collection(db, "users"), orderBy("createdAt", "desc"));
-      const snapshot = await getDocs(q);
-      const userList = snapshot.docs.map(doc => doc.data() as UserProfile);
-      setUsers(userList);
-      
-      // Prepare Chart Data (Registration Trends - Mocking logic for example)
-      const last7Days = [...Array(7)].map((_, i) => {
-        const d = new Date();
-        d.setDate(d.getDate() - i);
-        return d.toISOString().split('T')[0];
-      }).reverse();
-      
-      const trendData = last7Days.map(date => ({
-        name: date.slice(5), // MM-DD
-        registrations: userList.filter(u => u.createdAt.startsWith(date)).length
-      }));
-      setChartData(trendData);
+  const processUserChartData = (userList: UserProfile[]) => {
+    const last7Days = [...Array(7)].map((_, i) => {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      return d.toISOString().split('T')[0];
+    }).reverse();
+    
+    const trendData = last7Days.map(date => ({
+      name: date.slice(5), // MM-DD
+      registrations: userList.filter(u => u.createdAt && u.createdAt.startsWith(date)).length
+    }));
+    setChartData(trendData);
+  };
 
-    } catch (err) {
+  const fetchUsers = async () => {
+    setLoading(true);
+    setFetchError(null);
+    try {
+      try {
+        // Attempt with orderBy (requires Firestore Index)
+        const q = query(collection(db, "users"), orderBy("createdAt", "desc"));
+        const snapshot = await getDocs(q);
+        const userList = snapshot.docs.map(doc => doc.data() as UserProfile);
+        setUsers(userList);
+        processUserChartData(userList);
+      } catch (indexError: any) {
+        // Fallback to client-side sorting if index is missing
+        if (indexError.code === 'failed-precondition' || indexError.message.includes('index')) {
+          console.warn("Firestore index missing, falling back to client-side sorting.");
+          const q = query(collection(db, "users"));
+          const snapshot = await getDocs(q);
+          const userList = snapshot.docs.map(doc => doc.data() as UserProfile);
+          userList.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+          setUsers(userList);
+          processUserChartData(userList);
+        } else {
+          throw indexError;
+        }
+      }
+    } catch (err: any) {
       console.error("Error fetching users", err);
+      setFetchError(err.message || "Failed to fetch users");
     } finally {
       setLoading(false);
     }
   };
 
   const fetchKeys = async () => {
-    const q = query(collection(db, "api_keys"), orderBy("createdAt", "desc"));
-    const snapshot = await getDocs(q);
-    setApiKeys(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as ApiKey)));
+    try {
+      const q = query(collection(db, "api_keys"), orderBy("createdAt", "desc"));
+      const snapshot = await getDocs(q);
+      setApiKeys(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as ApiKey)));
+    } catch (e) {
+      console.error("Error fetching keys", e);
+    }
   };
 
   const fetchEndpoints = async () => {
@@ -179,6 +204,19 @@ const AdminDashboard: React.FC = () => {
         </div>
       </div>
 
+      {fetchError && (
+        <div className="bg-red-50 dark:bg-red-900/30 border-l-4 border-red-500 p-4 rounded shadow-sm">
+          <div className="flex items-center">
+            <AlertTriangle className="text-red-500 mr-3" size={24} />
+            <div>
+              <p className="font-bold text-red-700 dark:text-red-300">Error Fetching Data</p>
+              <p className="text-sm text-red-600 dark:text-red-400">{fetchError}</p>
+              <p className="text-xs text-red-500 mt-1">Check Firebase Console Security Rules or Indexes.</p>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Stats Cards */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
         <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 flex items-center">
@@ -187,7 +225,7 @@ const AdminDashboard: React.FC = () => {
           </div>
           <div>
             <p className="text-sm text-gray-500 dark:text-gray-400">Total Users</p>
-            <p className="text-2xl font-bold text-gray-900 dark:text-white">{realtimeCount}</p>
+            <p className="text-2xl font-bold text-gray-900 dark:text-white">{users.length || realtimeCount}</p>
           </div>
         </div>
         <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 flex items-center">
@@ -298,7 +336,7 @@ const AdminDashboard: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody className="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
-                  {filteredUsers.map((user) => (
+                  {filteredUsers.length > 0 ? filteredUsers.map((user) => (
                     <tr key={user.uid}>
                       <td className="px-6 py-4 whitespace-nowrap">
                         <div className="flex items-center">
@@ -320,7 +358,7 @@ const AdminDashboard: React.FC = () => {
                         </span>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
-                        {new Date(user.createdAt).toLocaleDateString()}
+                        {user.createdAt ? new Date(user.createdAt).toLocaleDateString() : 'N/A'}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium space-x-2">
                         <button 
@@ -339,7 +377,13 @@ const AdminDashboard: React.FC = () => {
                         </button>
                       </td>
                     </tr>
-                  ))}
+                  )) : (
+                    <tr>
+                      <td colSpan={4} className="px-6 py-8 text-center text-sm text-gray-500 dark:text-gray-400">
+                         {loading ? "Loading users..." : "No users found matching your search."}
+                      </td>
+                    </tr>
+                  )}
                 </tbody>
               </table>
             </div>
